@@ -1,4 +1,11 @@
-# 🌐 freenet
+# 🌐 Freenet
+---
+⚠️ Note:
+This project is provided as the original source code without any modifications and is intended for educational purposes only.
+🚫 Since the original repository was removed from GitHub, we did not fork it. Instead, we obtained the source separately and uploaded it independently.
+📂 Therefore, this repository is not an official GitHub fork, but contains the original code as-is, shared solely for learning and reference.
+
+---
 
 ## 📥 Download
 
