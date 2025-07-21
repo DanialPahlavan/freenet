@@ -58,13 +58,18 @@ class VPNConfigGUI:
         # Kill any existing Xray processes
         self.kill_existing_xray_processes()
         
+        # --- Early Initialization for Logging ---
+        # This must be done before any method that might call self.log()
+        self.log_queue = queue.Queue()
+        self.setup_logging()
+
         self.stop_event = threading.Event()
         self.thread_lock = threading.Lock()
         self.active_threads = []
         self.is_fetching = False
         
         # --- Configuration ---
-        # Load subscription mirrors from file
+        # Load subscription mirrors from file (now safe to call self.log)
         self.load_mirrors()
         
         # Set a default mirror URL. If mirrors were loaded, pick the first one.
@@ -102,13 +107,13 @@ class VPNConfigGUI:
         self.connected_config = None  # Track the currently connected config
         self.xray_process = None
         self.is_connected = False
-        self.log_queue = queue.Queue()
+        # self.log_queue is already initialized
         self.total_configs = 0
         self.tested_configs = 0
         self.working_configs = 0
         
         self.setup_ui()
-        self.setup_logging()
+        # self.setup_logging() is already called
         
         
         # Load best configs if file exists
