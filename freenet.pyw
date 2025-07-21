@@ -55,13 +55,13 @@ class VPNConfigGUI:
         # Configure dark theme
         self.setup_dark_theme()
         
-        # Kill any existing Xray processes
-        self.kill_existing_xray_processes()
-        
         # --- Initialize Logging Queues ---
         # This must be done before any method that might call self.log()
         self.log_queue = queue.Queue()
         self.xray_log_queue = queue.Queue()
+        
+        # Kill any existing Xray processes
+        self.kill_existing_xray_processes()
 
         self.stop_event = threading.Event()
         self.thread_lock = threading.Lock()
@@ -682,6 +682,28 @@ class VPNConfigGUI:
         except Exception as e:
             pass
     
+    # Method restored here
+    def kill_existing_xray_processes(self):
+        """Kill any existing Xray processes"""
+        try:
+            if sys.platform == 'win32':
+                # Windows implementation
+                import psutil
+                for proc in psutil.process_iter(['name']):
+                    try:
+                        if proc.info['name'] == 'xray.exe':
+                            proc.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+            else:
+                # Linux/macOS implementation
+                import signal
+                import subprocess
+                subprocess.run(['pkill', '-f', 'xray'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            # Cannot log here as logging might not be set up yet
+            print(f"Error killing existing Xray processes: {str(e)}")
+
     def vmess_to_json(self, vmess_url):
         if not vmess_url.startswith("vmess://"):
             raise ValueError("Invalid VMess URL format")
