@@ -1,0 +1,57 @@
+name: Build Freenet Executable
+
+# Controls when the workflow will run
+on:
+  # Triggers the workflow on push events but only for the "main" branch
+  push:
+    branches: [ "main" ]
+  
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  build:
+    # The type of runner that the job will run on
+    runs-on: windows-latest
+
+    steps:
+      # 1. Checkout repository
+      # Checks-out your repository under $GITHUB_WORKSPACE, so the job can access it
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Set up Python
+      # Installs a specific version of Python for the workflow
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 3. Install Python dependencies
+      # Installs all the required libraries identified from your script imports
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller requests tqdm qrcode Pillow psutil
+
+      # 4. Build executable with PyInstaller
+      # Runs the PyInstaller command to create the executable
+      - name: Build executable with PyInstaller
+        run: pyinstaller --onefile --noconsole --icon=icon.ico --name Freenet freenet.pyw
+
+      # 5. Prepare artifact for upload
+      # Creates a 'release' directory and copies the final executable and xray.exe into it
+      - name: Prepare artifact for upload
+        run: |
+          mkdir release
+          copy dist\Freenet.exe release\
+          copy xray.exe release\
+        shell: cmd
+
+      # 6. Upload artifact
+      # Uploads the 'release' directory so you can download the final package
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Freenet-App-Windows
+          path: release/
