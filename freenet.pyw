@@ -50,15 +50,13 @@ class VPNConfigGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("VPN Config Manager")
-        self.root.geometry("600x700+620+20") # Increased height for new panel
+        self.root.geometry("600x600+620+20") # Adjusted height after removing a panel
         
         # Configure dark theme
         self.setup_dark_theme()
         
         # --- Initialize Logging Queues ---
-        # This must be done before any method that might call self.log()
         self.log_queue = queue.Queue()
-        self.xray_log_queue = queue.Queue()
         
         # Kill any existing Xray processes
         self.kill_existing_xray_processes()
@@ -69,16 +67,12 @@ class VPNConfigGUI:
         self.is_fetching = False
         
         # --- UI and Logging Setup ---
-        # Create all UI elements first, then set up the logging systems that use them.
         self.setup_ui()
         self.setup_logging()
-        self.setup_xray_logging()
 
         # --- Configuration ---
-        # Now it's safe to call methods that might log messages.
         self.load_mirrors()
         
-        # Set a default mirror URL.
         if self.MIRRORS:
             default_mirror_key = next(iter(self.MIRRORS))
             self.CONFIGS_URL = self.MIRRORS[default_mirror_key]
@@ -88,6 +82,7 @@ class VPNConfigGUI:
 
         self.WORKING_CONFIGS_FILE = "working_configs.txt"
         self.BEST_CONFIGS_FILE = "best_configs.txt"
+        self.XRAY_LOG_FILE = "xray_log.txt" # Log file for Xray output
         
         self.TEMP_FOLDER = os.path.join(os.getcwd(), "temp")
         self.TEMP_CONFIG_FILE = os.path.join(self.TEMP_FOLDER, "temp_config.json")
@@ -229,7 +224,7 @@ class VPNConfigGUI:
         # --- Middle Treeview Frame (Top Pane) ---
         self.middle_frame = ttk.Frame(main_pane)
         columns = ('Index', 'Latency', 'Protocol', 'Server', 'Port' ,'Config')
-        self.tree = ttk.Treeview(self.middle_frame, columns=columns, show='headings', height=10)
+        self.tree = ttk.Treeview(self.middle_frame, columns=columns, show='headings', height=15) # Adjusted height
         for col in columns:
             self.tree.heading(col, text=col)
             self.tree.column(col, anchor='center', minwidth=50)
@@ -259,13 +254,10 @@ class VPNConfigGUI:
         self.root.bind('<Q>', self.generate_qrcode)
         main_pane.add(self.middle_frame)
 
-        # --- Bottom Frame Container (Bottom Pane) ---
-        bottom_frame_container = ttk.Frame(main_pane)
-        main_pane.add(bottom_frame_container)
-
-        # --- General Logs Frame (inside bottom container) ---
-        log_frame = ttk.LabelFrame(bottom_frame_container, text="Logs")
-        log_frame.pack(fill=tk.BOTH, expand=True, padx=0, pady=(0, 5))
+        # --- Bottom Logs Frame (Bottom Pane) ---
+        log_frame = ttk.LabelFrame(main_pane, text="Logs")
+        main_pane.add(log_frame)
+        
         counter_frame = ttk.Frame(log_frame)
         counter_frame.pack(fill=tk.X, padx=5, pady=(5, 0))
         self.tested_label = ttk.Label(counter_frame, text="Tested: 0")
@@ -276,19 +268,12 @@ class VPNConfigGUI:
         self.working_label.pack(side=tk.LEFT, padx=(10, 0))
         self.progress = ttk.Progressbar(counter_frame, mode='determinate')
         self.progress.pack(side=tk.RIGHT, padx=(10, 10), fill=tk.X, expand=True)
-        self.terminal = scrolledtext.ScrolledText(log_frame, height=4, state=tk.DISABLED)
+        self.terminal = scrolledtext.ScrolledText(log_frame, height=5, state=tk.DISABLED)
         self.terminal.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.terminal.configure(bg='#3e3e3e', fg='#ffffff', insertbackground='white')
-
-        # --- Xray Status Frame (inside bottom container) ---
-        xray_frame = ttk.LabelFrame(bottom_frame_container, text="Xray Status")
-        xray_frame.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
-        self.xray_terminal = scrolledtext.ScrolledText(xray_frame, height=4, state=tk.DISABLED)
-        self.xray_terminal.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        self.xray_terminal.configure(bg='#1e1e1e', fg='#cccccc', insertbackground='white')
         
         main_pane.paneconfigure(self.middle_frame, minsize=200)
-        main_pane.paneconfigure(bottom_frame_container, minsize=150)
+        main_pane.paneconfigure(log_frame, minsize=100)
         
     def setup_logging(self):
         self.log_thread = threading.Thread(target=self.process_logs, daemon=True)
@@ -312,50 +297,18 @@ class VPNConfigGUI:
         self.terminal.see(tk.END)
         self.terminal.config(state=tk.DISABLED)
 
-    def setup_xray_logging(self):
-        """Initializes the logging system for Xray-specific output."""
-        self.xray_log_thread = threading.Thread(target=self.process_xray_logs, daemon=True)
-        self.xray_log_thread.start()
-
-    def log_xray(self, message):
-        """Adds an Xray-specific log message to its queue."""
-        self.xray_log_queue.put(message)
-
-    def process_xray_logs(self):
-        """Processes Xray log messages from the queue and updates the UI."""
-        while True:
-            try:
-                message = self.xray_log_queue.get(timeout=0.1)
-                self.root.after(0, self.update_xray_terminal, message)
-            except queue.Empty:
-                continue
-
-    def update_xray_terminal(self, message):
-        """Updates the Xray status terminal with a new message."""
-        self.xray_terminal.config(state=tk.NORMAL)
-        self.xray_terminal.insert(tk.END, message + "\n")
-        self.xray_terminal.see(tk.END)
-        self.xray_terminal.config(state=tk.DISABLED)
-
-    def _stream_process_output(self, process, logger_func, filter_banner=False):
+    def _stream_process_output_to_file(self, process, file_handle):
         """
-        Reads stdout of a given process line-by-line in a separate thread
-        and logs it using the provided logging function.
-        Can optionally filter out the startup banner.
+        Reads stdout of a process and writes it directly to a file.
         """
         try:
             for line in iter(process.stdout.readline, ''):
-                stripped_line = line.strip()
-                if stripped_line:
-                    if filter_banner:
-                        # Filter out the repetitive startup banner lines
-                        if "Penetrates Everything" not in stripped_line and "anti-censorship" not in stripped_line:
-                            logger_func(stripped_line)
-                    else:
-                        logger_func(stripped_line)
+                if line:
+                    file_handle.write(line)
+                    file_handle.flush() # Ensure it's written immediately
             process.stdout.close()
         except Exception as e:
-            logger_func(f"Error reading process stream: {e}")
+            file_handle.write(f"Error reading process stream: {e}\n")
     
     def parse_config_info(self, config_uri):
         """Extract basic info from config URI"""
@@ -426,8 +379,6 @@ class VPNConfigGUI:
         else:
             self.stop_fetching()
             
-    # --- START OF RESTORED METHODS ---
-
     def show_mirror_selection(self):
         """Show a popup window to select mirror and thread count"""
         self.mirror_window = tk.Toplevel(self.root)
@@ -629,40 +580,50 @@ class VPNConfigGUI:
         thread.start()
 
     def _test_pasted_configs_worker(self, configs):
+        all_xray_logs = []
         try:
             self.total_configs = len(configs)
             self.tested_configs, self.working_configs = 0, 0
             self.root.after(0, self.update_counters)
             self.root.after(0, lambda: self.progress.config(maximum=len(configs), value=0))
-            best_configs, all_tested_configs = [], []
+            best_configs = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.LATENCY_WORKERS) as executor:
                 futures = {executor.submit(self.measure_latency, config): config for config in configs}
                 for future in concurrent.futures.as_completed(futures):
-                    result = future.result()
+                    config_uri, latency, xray_output = future.result()
+                    if xray_output:
+                        all_xray_logs.append(f"--- Log for {config_uri[:30]}... ---\n{xray_output}")
+
                     self.tested_configs += 1
-                    all_tested_configs.append(result)
-                    if result[1] != float('inf'):
-                        existing_index = next((i for i, (uri, _) in enumerate(best_configs) if uri == result[0]), None)
+                    if latency != float('inf'):
+                        existing_index = next((i for i, (uri, _) in enumerate(best_configs) if uri == config_uri), None)
                         if existing_index is not None:
-                            if result[1] < best_configs[existing_index][1]:
-                                best_configs[existing_index] = result
-                                self.log(f"Updated config latency: {result[1]:.2f}ms")
+                            if latency < best_configs[existing_index][1]:
+                                best_configs[existing_index] = (config_uri, latency)
+                                self.log(f"Updated config latency: {latency:.2f}ms")
                         else:
-                            best_configs.append(result)
+                            best_configs.append((config_uri, latency))
                             self.working_configs += 1
-                            self.log(f"Working config found: {result[1]:.2f}ms")
+                            self.log(f"Working config found: {latency:.2f}ms")
                     self.root.after(0, lambda: self.progress.config(value=self.tested_configs))
                     self.root.after(0, self.update_counters)
-            self.best_configs = [config for config in best_configs if config[1] != float('inf')]
-            self.best_configs.sort(key=lambda x: x[1])
+            
+            self.best_configs = sorted(best_configs, key=lambda x: x[1])
+            
+            # Save ALL configs to file (both working and non-working)
             with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
-                for config_uri, _ in all_tested_configs:
-                    f.write(f"{config_uri}\n")
+                for config in configs:
+                    f.write(f"{config}\n")
+
             self.root.after(0, self.update_treeview)
             self.log(f"Testing complete! Found {len(self.best_configs)} working configs")
         except Exception as e:
             self.log(f"Error in testing pasted configs: {str(e)}")
         finally:
+            with open(self.XRAY_LOG_FILE, "w", encoding="utf-8") as f:
+                f.write("\n\n".join(all_xray_logs))
+            self.log(f"Xray test logs saved to {self.XRAY_LOG_FILE}")
+            
             self.root.after(0, lambda: self.fetch_btn.config(state=tk.NORMAL))
             self.root.after(0, lambda: self.reload_btn.config(state=tk.NORMAL))
             self.root.after(0, lambda: self.progress.config(value=0))
@@ -684,11 +645,10 @@ class VPNConfigGUI:
         self.tested_label.config(text=f"Tested: {self.tested_configs}")
         self.total_label.config(text=f"Total: {self.total_configs}")
         self.working_label.config(text=f"Working: {self.working_configs}")
-
-    # --- END OF RESTORED METHODS ---
         
     def _fetch_and_test_worker(self):
         """Worker thread for fetching and testing configs"""
+        all_xray_logs = []
         try:
             with self.thread_lock:
                 self.active_threads.append(threading.current_thread())
@@ -719,26 +679,27 @@ class VPNConfigGUI:
                 futures = {executor.submit(self.measure_latency, config): config for config in configs}
                 for future in concurrent.futures.as_completed(futures):
                     if self.stop_event.is_set():
-                        for f in futures:
-                            f.cancel()
+                        for f in futures: f.cancel()
                         break
                         
-                    result = future.result()
+                    config_uri, latency, xray_output = future.result()
+                    if xray_output:
+                        all_xray_logs.append(f"--- Log for {config_uri[:30]}... ---\n{xray_output}")
+
                     self.tested_configs += 1
                     
-                    if result[1] != float('inf'):
-                        config_uri = result[0]
+                    if latency != float('inf'):
                         if (not any(x[0] == config_uri for x in best_configs) and 
                             config_uri not in existing_configs):
                             
-                            best_configs.append(result)
+                            best_configs.append((config_uri, latency))
                             self.working_configs += 1
                             existing_configs.add(config_uri)
                             
                             with open(self.BEST_CONFIGS_FILE, 'a', encoding='utf-8') as f:
                                 f.write(f"{config_uri}\n")
                                 
-                            self.log(f"Working config found: {result[1]:.2f}ms - added to best configs")
+                            self.log(f"Working config found: {latency:.2f}ms - added to best configs")
                             self.best_configs = sorted(best_configs, key=lambda x: x[1])
                             self.root.after(0, self.update_treeview)
                         
@@ -756,14 +717,16 @@ class VPNConfigGUI:
             if not self.stop_event.is_set():
                 self.log(f"Error in fetch and test: {str(e)}")
         finally:
+            with open(self.XRAY_LOG_FILE, "w", encoding="utf-8") as f:
+                f.write("\n\n".join(all_xray_logs))
+            self.log(f"Xray test logs saved to {self.XRAY_LOG_FILE}")
+
             with self.thread_lock:
                 if threading.current_thread() in self.active_threads:
                     self.active_threads.remove(threading.current_thread())
                     
             if not self.stop_event.is_set():
-                self.root.after(0, lambda: self.fetch_btn.config(
-                    text="Fetch & Test New Configs", state=tk.NORMAL, style='TButton'
-                ))
+                self.root.after(0, lambda: self.fetch_btn.config(text="Fetch & Test New Configs", state=tk.NORMAL, style='TButton'))
                 self.root.after(0, lambda: self.reload_btn.config(state=tk.NORMAL))
                 self.root.after(0, lambda: self.progress.config(value=0))
                 self.is_fetching = False
@@ -777,9 +740,7 @@ class VPNConfigGUI:
         for i, (config_uri, latency) in enumerate(self.best_configs[:max_configs]):
             protocol, server, port = self.parse_config_info(config_uri)
             tags = ('connected',) if self.connected_config and config_uri == self.connected_config else ()
-            self.tree.insert('', 'end', values=(
-                i + 1, f"{latency:.2f}", protocol, server, port, config_uri
-            ), tags=tags)
+            self.tree.insert('', 'end', values=(i + 1, f"{latency:.2f}", protocol, server, port, config_uri), tags=tags)
             
         self.log(f"Updated treeview with {max_configs} best configs")
         
@@ -863,7 +824,11 @@ class VPNConfigGUI:
                 self.is_connected = True
                 self.root.after(0, self.update_connection_status, True)
                 self.log("Connected successfully!")
-                monitor_thread = threading.Thread(target=self._monitor_xray, daemon=True)
+                
+                # Start monitoring thread to log connection output to file
+                self.log(f"Xray connection log is being written to {self.XRAY_LOG_FILE}")
+                log_file_handle = open(self.XRAY_LOG_FILE, "w", encoding="utf-8")
+                monitor_thread = threading.Thread(target=self._stream_process_output_to_file, args=(self.xray_process, log_file_handle), daemon=True)
                 monitor_thread.start()
             else:
                 self.log("Failed to start Xray. Check Xray Status panel for details.")
@@ -871,11 +836,6 @@ class VPNConfigGUI:
                 
         except Exception as e:
             self.log(f"Connection error: {str(e)}")
-            
-    def _monitor_xray(self):
-        """Monitor Xray process output and log to the Xray terminal."""
-        if self.xray_process:
-            self._stream_process_output(self.xray_process, self.log_xray, filter_banner=False)
                     
     def update_connection_status(self, connected):
         """Update connection status in GUI"""
@@ -950,12 +910,10 @@ class VPNConfigGUI:
         except Exception as e:
             pass
     
-    # Method restored here
     def kill_existing_xray_processes(self):
         """Kill any existing Xray processes"""
         try:
             if sys.platform == 'win32':
-                # Windows implementation
                 import psutil
                 for proc in psutil.process_iter(['name']):
                     try:
@@ -964,12 +922,10 @@ class VPNConfigGUI:
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         pass
             else:
-                # Linux/macOS implementation
                 import signal
                 import subprocess
                 subprocess.run(['pkill', '-f', 'xray'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
-            # Cannot log here as logging might not be set up yet
             print(f"Error killing existing Xray processes: {str(e)}")
 
     def vmess_to_json(self, vmess_url):
@@ -1064,9 +1020,7 @@ class VPNConfigGUI:
         return 1080
 
     def measure_latency(self, config_uri):
-        if self.stop_event.is_set():
-            return (config_uri, float('inf'))
-            
+        xray_output = None
         try:
             socks_port = self.get_available_port()
             if socks_port is None: socks_port = 1080 + random.randint(1, 100)
@@ -1093,14 +1047,11 @@ class VPNConfigGUI:
                 startupinfo=startupinfo
             )
             
-            output_monitor = threading.Thread(target=self._stream_process_output, args=(xray_process, self.log_xray, True), daemon=True)
-            output_monitor.start()
-
             if self.stop_event.is_set():
                 xray_process.terminate()
                 try: os.remove(temp_config_file)
                 except: pass
-                return (config_uri, float('inf'))
+                return (config_uri, float('inf'), "Operation stopped.")
                 
             time.sleep(0.1)
             
@@ -1114,16 +1065,20 @@ class VPNConfigGUI:
             except requests.RequestException: pass
             finally:
                 xray_process.terminate()
-                try: xray_process.wait(timeout=2)
-                except subprocess.TimeoutExpired: xray_process.kill()
+                try:
+                    xray_output, _ = xray_process.communicate(timeout=2)
+                except subprocess.TimeoutExpired:
+                    xray_process.kill()
+                    xray_output, _ = xray_process.communicate()
+                
                 try: os.remove(temp_config_file)
                 except: pass
                 time.sleep(0.1)
             
-            return (config_uri, latency)
+            return (config_uri, latency, xray_output)
         
         except Exception as e:
-            return (config_uri, float('inf'))
+            return (config_uri, float('inf'), str(e))
 
     def fetch_configs(self):
         try:
