@@ -337,15 +337,22 @@ class VPNConfigGUI:
         self.xray_terminal.see(tk.END)
         self.xray_terminal.config(state=tk.DISABLED)
 
-    def _stream_process_output(self, process, logger_func):
+    def _stream_process_output(self, process, logger_func, filter_banner=False):
         """
         Reads stdout of a given process line-by-line in a separate thread
         and logs it using the provided logging function.
+        Can optionally filter out the startup banner.
         """
         try:
             for line in iter(process.stdout.readline, ''):
-                if line:
-                    logger_func(line.strip())
+                stripped_line = line.strip()
+                if stripped_line:
+                    if filter_banner:
+                        # Filter out the repetitive startup banner lines
+                        if "Penetrates Everything" not in stripped_line and "anti-censorship" not in stripped_line:
+                            logger_func(stripped_line)
+                    else:
+                        logger_func(stripped_line)
             process.stdout.close()
         except Exception as e:
             logger_func(f"Error reading process stream: {e}")
@@ -868,7 +875,7 @@ class VPNConfigGUI:
     def _monitor_xray(self):
         """Monitor Xray process output and log to the Xray terminal."""
         if self.xray_process:
-            self._stream_process_output(self.xray_process, self.log_xray)
+            self._stream_process_output(self.xray_process, self.log_xray, filter_banner=False)
                     
     def update_connection_status(self, connected):
         """Update connection status in GUI"""
@@ -1086,7 +1093,7 @@ class VPNConfigGUI:
                 startupinfo=startupinfo
             )
             
-            output_monitor = threading.Thread(target=self._stream_process_output, args=(xray_process, self.log_xray), daemon=True)
+            output_monitor = threading.Thread(target=self._stream_process_output, args=(xray_process, self.log_xray, True), daemon=True)
             output_monitor.start()
 
             if self.stop_event.is_set():
