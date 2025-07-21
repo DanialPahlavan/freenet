@@ -63,18 +63,21 @@ class VPNConfigGUI:
         self.active_threads = []
         self.is_fetching = False
         
-        # Configuration - now using a dictionary of mirrors
-        self.MIRRORS = {
-            "barry-far": "https://raw.githubusercontent.com/barry-far/V2ray-Config/refs/heads/main/All_Configs_Sub.txt",
-            "SoliSpirit": "https://raw.githubusercontent.com/SoliSpirit/v2ray-configs/refs/heads/main/all_configs.txt",
-            #"mrvcoder": "https://raw.githubusercontent.com/mrvcoder/V2rayCollector/refs/heads/main/mixed_iran.txt",
-            #"MatinGhanbari": "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/all_sub.txt",
-        }
-        self.CONFIGS_URL = self.MIRRORS["barry-far"]  # Default mirror
+        # --- Configuration ---
+        # Load subscription mirrors from file
+        self.load_mirrors()
+        
+        # Set a default mirror URL. If mirrors were loaded, pick the first one.
+        if self.MIRRORS:
+            default_mirror_key = next(iter(self.MIRRORS))
+            self.CONFIGS_URL = self.MIRRORS[default_mirror_key]
+        else:
+            # This case is unlikely due to fallbacks in load_mirrors, but is a safe default.
+            self.log("CRITICAL: No mirrors loaded. Please create a valid 'sub.txt'.")
+            self.CONFIGS_URL = ""
+
         self.WORKING_CONFIGS_FILE = "working_configs.txt"
         self.BEST_CONFIGS_FILE = "best_configs.txt"
-        self.TEMP_CONFIG_FILE = "temp_config.json"
-        
         
         
         
@@ -111,11 +114,49 @@ class VPNConfigGUI:
         # Load best configs if file exists
         if os.path.exists(self.BEST_CONFIGS_FILE):
             self.load_best_configs()
+            
+    def load_mirrors(self):
+        """Loads subscription mirrors from sub.txt."""
+        self.MIRRORS = {}
+        subs_file = "sub.txt"
         
+        # Fallback mirrors in case the file is not found or is invalid
+        fallback_mirrors = {
+            "barry-far": "https://raw.githubusercontent.com/barry-far/V2ray-Config/refs/heads/main/All_Configs_Sub.txt",
+            "SoliSpirit": "https://raw.githubusercontent.com/SoliSpirit/v2ray-configs/refs/heads/main/all_configs.txt",
+        }
+
+        if not os.path.exists(subs_file):
+            self.log(f"'{subs_file}' not found. Using default mirrors.")
+            self.MIRRORS = fallback_mirrors
+            return
+
+        try:
+            with open(subs_file, 'r', encoding='utf-8') as f:
+                lines = [line.strip() for line in f if line.strip()]
+            
+            if not lines:
+                self.log(f"'{subs_file}' is empty. Using default mirrors.")
+                self.MIRRORS = fallback_mirrors
+                return
+
+            # Construct a valid JSON string from the lines by adding commas
+            json_content = "{\n" + ",\n".join(lines) + "\n}"
+            
+            self.MIRRORS = json.loads(json_content)
+            self.log(f"Successfully loaded {len(self.MIRRORS)} mirrors from {subs_file}.")
+
+        except json.JSONDecodeError as e:
+            self.log(f"Error decoding JSON from '{subs_file}': {e}. Using default mirrors.")
+            self.MIRRORS = fallback_mirrors
+        except Exception as e:
+            self.log(f"An unexpected error occurred while loading mirrors: {e}. Using default mirrors.")
+            self.MIRRORS = fallback_mirrors
+
     def setup_dark_theme(self):
         """Configure dark theme colors"""
         self.root.tk_setPalette(background='#2d2d2d', foreground='#ffffff',
-                              activeBackground='#3e3e3e', activeForeground='#ffffff')
+                                 activeBackground='#3e3e3e', activeForeground='#ffffff')
 
         style = ttk.Style()
         style.theme_use('clam')
@@ -129,12 +170,12 @@ class VPNConfigGUI:
         
         # Treeview styling
         style.configure('Treeview', 
-                       background='#3e3e3e', 
-                       foreground='#ffffff', 
-                       fieldbackground='#3e3e3e')
+                        background='#3e3e3e', 
+                        foreground='#ffffff', 
+                        fieldbackground='#3e3e3e')
         style.configure('Treeview.Heading', 
-                       background='#3e3e3e', 
-                       foreground='#ffffff')  # Remove button-like appearance
+                        background='#3e3e3e', 
+                        foreground='#ffffff')  # Remove button-like appearance
         
         # Remove hover effect on headers
         style.map('Treeview.Heading', 
@@ -148,11 +189,11 @@ class VPNConfigGUI:
 
         # Button styling - modified to remove focus highlight
         style.configure('TButton', 
-                       background='#3e3e3e', 
-                       foreground='#ffffff', 
-                       relief='flat',
-                       focuscolor='#3e3e3e',  # Same as background
-                       focusthickness=0)       # Remove focus thickness
+                        background='#3e3e3e', 
+                        foreground='#ffffff', 
+                        relief='flat',
+                        focuscolor='#3e3e3e',  # Same as background
+                        focusthickness=0)       # Remove focus thickness
         
         style.map('TButton',
                   background=[('!active', '#3e3e3e'), ('pressed', '#3e3e3e')],
@@ -160,10 +201,10 @@ class VPNConfigGUI:
         
         # Special style for stop button
         style.configure('Stop.TButton', 
-                       background='Tomato', 
-                       foreground='#ffffff',
-                       focuscolor='Tomato',    # Same as background
-                       focusthickness=0)      # Remove focus thickness
+                        background='Tomato', 
+                        foreground='#ffffff',
+                        focuscolor='Tomato',    # Same as background
+                        focusthickness=0)       # Remove focus thickness
         
         style.map('Stop.TButton',
                   background=[('!active', 'Tomato'), ('pressed', 'Tomato')],
@@ -176,7 +217,7 @@ class VPNConfigGUI:
         top_frame = ttk.Frame(self.root)
         top_frame.pack(fill=tk.X, pady=(10, 5), padx=10)
 
-        # Buttons    
+        # Buttons      
         self.fetch_btn = ttk.Button(top_frame, text="Fetch & Test New Configs", command=self.fetch_and_test_configs, cursor='hand2')
         self.fetch_btn.pack(side=tk.LEFT, padx=(0, 5))
         
@@ -195,12 +236,11 @@ class VPNConfigGUI:
         self.status_label.pack(side=tk.RIGHT)
         
         
-
-        
-        
-        
         
 
+        
+        
+        
         
 
         # --- Paned Window ---
@@ -329,7 +369,7 @@ class VPNConfigGUI:
         
         # Dark theme for the popup
         self.mirror_window.tk_setPalette(background='#2d2d2d', foreground='#ffffff',
-                              activeBackground='#3e3e3e', activeForeground='#ffffff')
+                                   activeBackground='#3e3e3e', activeForeground='#ffffff')
         
         # Create a custom style for the combobox
         style = ttk.Style()
@@ -337,14 +377,14 @@ class VPNConfigGUI:
         
         # Configure combobox colors
         style.configure('TCombobox', 
-                       fieldbackground='#3e3e3e',  # Background of the text field
-                       background='#3e3e3e',       # Background of the dropdown
-                       foreground='#ffffff',       # Text color
-                       selectbackground='#4a6984', # Selection background
-                       selectforeground='#ffffff', # Selection text color
-                       bordercolor='#3e3e3e',     # Border color
-                       lightcolor='#3e3e3e',      # Light part of the border
-                       darkcolor='#3e3e3e')       # Dark part of the border
+                        fieldbackground='#3e3e3e',  # Background of the text field
+                        background='#3e3e3e',      # Background of the dropdown
+                        foreground='#ffffff',      # Text color
+                        selectbackground='#4a6984', # Selection background
+                        selectforeground='#ffffff', # Selection text color
+                        bordercolor='#3e3e3e',      # Border color
+                        lightcolor='#3e3e3e',      # Light part of the border
+                        darkcolor='#3e3e3e')      # Dark part of the border
         
         # Configure the dropdown list
         style.map('TCombobox', 
