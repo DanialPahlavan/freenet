@@ -418,6 +418,267 @@ class VPNConfigGUI:
             self.show_mirror_selection()
         else:
             self.stop_fetching()
+            
+    # --- START OF RESTORED METHODS ---
+
+    def show_mirror_selection(self):
+        """Show a popup window to select mirror and thread count"""
+        self.mirror_window = tk.Toplevel(self.root)
+        self.mirror_window.title("Select Mirror & Threads")
+        self.mirror_window.geometry("300x200")
+        self.mirror_window.resizable(False, False)
+        
+        window_width, window_height = 300, 200
+        screen_width, screen_height = self.mirror_window.winfo_screenwidth(), self.mirror_window.winfo_screenheight()
+        x, y = int((screen_width/2) - (window_width/2)), int((screen_height/2) - (window_height/2))
+        self.mirror_window.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        
+        self.mirror_window.tk_setPalette(background='#2d2d2d', foreground='#ffffff', activeBackground='#3e3e3e', activeForeground='#ffffff')
+        
+        ttk.Label(self.mirror_window, text="Select a mirror:").pack(pady=(10, 0))
+        self.mirror_combo = ttk.Combobox(self.mirror_window, values=list(self.MIRRORS.keys()), state="readonly", style='TCombobox')
+        self.mirror_combo.current(0)
+        self.mirror_combo.pack(pady=5, padx=20, fill=tk.X)
+        
+        ttk.Label(self.mirror_window, text="Maximum cpu usage:").pack(pady=(10, 0))
+        self.thread_combo = ttk.Combobox(self.mirror_window, values=["10", "20", "50", "100"], state="readonly", style='TCombobox')
+        self.thread_combo.set("100")
+        self.thread_combo.pack(pady=5, padx=20, fill=tk.X)
+        
+        self.mirror_window.option_add('*TCombobox*Listbox.background', '#3e3e3e')
+        self.mirror_window.option_add('*TCombobox*Listbox.foreground', '#ffffff')
+        self.mirror_window.option_add('*TCombobox*Listbox.selectBackground', '#4a6984')
+        self.mirror_window.option_add('*TCombobox*Listbox.selectForeground', '#ffffff')
+        
+        button_frame = ttk.Frame(self.mirror_window)
+        button_frame.pack(pady=10)
+        ttk.Button(button_frame, text="OK", command=self.on_mirror_selected).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Cancel", command=self.cancel_mirror_selection).pack(side=tk.LEFT, padx=5)
+        
+        self.mirror_window.protocol("WM_DELETE_WINDOW", self.cancel_mirror_selection)
+        self.mirror_window.grab_set()
+        self.mirror_window.transient(self.root)
+        self.mirror_window.wait_window(self.mirror_window)
+
+    def cancel_mirror_selection(self):
+        if hasattr(self, 'mirror_window') and self.mirror_window:
+            self.mirror_window.destroy()
+        self.fetch_btn.config(text="Fetch & Test New Configs", style='TButton', state=tk.NORMAL)
+        self.is_fetching = False
+
+    def on_mirror_selected(self):
+        selected_mirror = self.mirror_combo.get()
+        selected_threads = self.thread_combo.get()
+        if selected_mirror in self.MIRRORS:
+            self.CONFIGS_URL = self.MIRRORS[selected_mirror]
+            try:
+                self.LATENCY_WORKERS = int(selected_threads)
+            except ValueError:
+                self.LATENCY_WORKERS = 100
+            self.log(f"Selected mirror: {selected_mirror}, Threads: {self.LATENCY_WORKERS}")
+            self.mirror_window.destroy()
+            self._start_fetch_and_test()
+        else:
+            self.cancel_mirror_selection()
+
+    def _start_fetch_and_test(self):
+        self.is_fetching = True
+        self.fetch_btn.config(text="Stop Fetching Configs", style='Stop.TButton')
+        self.log("Starting config fetch and test...")
+        self.stop_event.clear()
+        thread = threading.Thread(target=self._fetch_and_test_worker, daemon=True)
+        thread.start()
+
+    def on_right_click(self, event):
+        item = self.tree.identify_row(event.y)
+        if item:
+            self.tree.selection_set(item)
+            self.on_config_highlight(event)
+            try:
+                self.generate_qrcode()
+            except:
+                pass
+
+    def load_best_configs(self):
+        try:
+            if os.path.exists(self.BEST_CONFIGS_FILE):
+                with open(self.BEST_CONFIGS_FILE, 'r', encoding='utf-8') as f:
+                    seen, config_uris = [], []
+                    for line in f:
+                        line = line.strip()
+                        if line and line not in seen:
+                            seen.append(line)
+                            config_uris.append(line)
+                    if config_uris:
+                        self.best_configs = [(uri, float('inf')) for uri in config_uris]
+                        self.total_configs = len(config_uris)
+                        self.tested_configs = 0
+                        self.working_configs = 0
+                        self.update_counters()
+                        self.root.after(0, lambda: self.progress.config(maximum=len(config_uris), value=0))
+                        self.log(f"Loaded {len(config_uris)} configs from {self.BEST_CONFIGS_FILE}")
+                        thread = threading.Thread(target=self._test_pasted_configs_worker, args=(config_uris,), daemon=True)
+                        thread.start()
+        except Exception as e:
+            self.log(f"Error loading best configs: {str(e)}")
+
+    def reload_and_test_configs(self):
+        self.reload_btn.config(state=tk.DISABLED)
+        self.log("Reloading and testing configs from best_configs.txt...")
+        self.best_configs = []
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        self.load_best_configs()
+
+    def delete_selected_configs(self, event=None):
+        selected_items = self.tree.selection()
+        if not selected_items: return
+        selected_uris = [self.tree.item(item)['values'][5] for item in selected_items]
+        try:
+            with open(self.BEST_CONFIGS_FILE, 'r', encoding='utf-8') as f:
+                all_configs = [line.strip() for line in f if line.strip()]
+            remaining_configs, deleted_count = [], 0
+            for config in all_configs:
+                if config not in selected_uris:
+                    remaining_configs.append(config)
+                else:
+                    deleted_count += 1
+            with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(remaining_configs))
+            self.best_configs = []
+            self.load_best_configs()
+            self.log(f"Deleted {deleted_count} config(s)")
+        except Exception as e:
+            self.log(f"Error deleting configs: {str(e)}")
+
+    def save_best_configs(self):
+        try:
+            with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
+                for config_uri, _ in self.best_configs:
+                    f.write(f"{config_uri}\n")
+        except Exception as e:
+            self.log(f"Error saving best configs: {str(e)}")
+
+    def generate_qrcode(self, event=None):
+        selected_items = self.tree.selection()
+        if not selected_items: return
+        item = selected_items[0]
+        index = int(self.tree.item(item)['values'][0]) - 1
+        if 0 <= index < len(self.best_configs):
+            config_uri = self.best_configs[index][0]
+            qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=4)
+            qr.add_data(config_uri)
+            qr.make(fit=True)
+            self.original_img = qr.make_image(fill_color="black", back_color="white")
+            qr_window = tk.Toplevel(self.root)
+            qr_window.title("Config QR Code")
+            qr_window.geometry("600x620+20+20")
+            self.tk_image = ImageTk.PhotoImage(self.original_img)
+            self.label = ttk.Label(qr_window, image=self.tk_image)
+            self.label.image = self.tk_image
+            self.label.pack(pady=10)
+            if config_uri.startswith("vmess://"):
+                self.zoom_level = 0.7
+                width, height = self.original_img.size
+                new_size = (int(width * self.zoom_level), int(height * self.zoom_level))
+                resized_img = self.original_img.resize(new_size, Image.Resampling.LANCZOS)
+                self.tk_image = ImageTk.PhotoImage(resized_img)
+                self.label.configure(image=self.tk_image)
+                self.label.image = self.tk_image
+            else:
+                self.zoom_level = 1.0
+            qr_window.bind("<Control-MouseWheel>", self.zoom_qrcode)
+            self.label.bind("<Control-MouseWheel>", self.zoom_qrcode)
+            config_preview = ttk.Label(qr_window, text=config_uri[:40] + "..." if len(config_uri) > 40 else config_uri, wraplength=280)
+            config_preview.pack(pady=5, padx=10)
+            close_btn = ttk.Button(qr_window, text="Close", command=qr_window.destroy)
+            close_btn.pack(pady=5)
+
+    def zoom_qrcode(self, event):
+        self.zoom_level *= 1.1 if event.delta > 0 else 0.9
+        self.zoom_level = max(0.1, min(self.zoom_level, 5.0))
+        width, height = self.original_img.size
+        new_size = (int(width * self.zoom_level), int(height * self.zoom_level))
+        resized_img = self.original_img.resize(new_size, Image.Resampling.LANCZOS)
+        self.tk_image = ImageTk.PhotoImage(resized_img)
+        self.label.configure(image=self.tk_image)
+        self.label.image = self.tk_image
+
+    def paste_configs(self, event=None):
+        try:
+            clipboard = self.root.clipboard_get()
+            if clipboard.strip():
+                configs = [line.strip() for line in clipboard.splitlines() if line.strip()]
+                if configs:
+                    self.log(f"Pasted {len(configs)} config(s) from clipboard")
+                    self._test_pasted_configs(configs)
+        except tk.TclError:
+            pass
+
+    def _test_pasted_configs(self, configs):
+        self.fetch_btn.config(state=tk.DISABLED)
+        self.log("Testing pasted configs...")
+        thread = threading.Thread(target=self._test_pasted_configs_worker, args=(configs,), daemon=True)
+        thread.start()
+
+    def _test_pasted_configs_worker(self, configs):
+        try:
+            self.total_configs = len(configs)
+            self.tested_configs, self.working_configs = 0, 0
+            self.root.after(0, self.update_counters)
+            self.root.after(0, lambda: self.progress.config(maximum=len(configs), value=0))
+            best_configs, all_tested_configs = [], []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.LATENCY_WORKERS) as executor:
+                futures = {executor.submit(self.measure_latency, config): config for config in configs}
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()
+                    self.tested_configs += 1
+                    all_tested_configs.append(result)
+                    if result[1] != float('inf'):
+                        existing_index = next((i for i, (uri, _) in enumerate(best_configs) if uri == result[0]), None)
+                        if existing_index is not None:
+                            if result[1] < best_configs[existing_index][1]:
+                                best_configs[existing_index] = result
+                                self.log(f"Updated config latency: {result[1]:.2f}ms")
+                        else:
+                            best_configs.append(result)
+                            self.working_configs += 1
+                            self.log(f"Working config found: {result[1]:.2f}ms")
+                    self.root.after(0, lambda: self.progress.config(value=self.tested_configs))
+                    self.root.after(0, self.update_counters)
+            self.best_configs = [config for config in best_configs if config[1] != float('inf')]
+            self.best_configs.sort(key=lambda x: x[1])
+            with open(self.BEST_CONFIGS_FILE, 'w', encoding='utf-8') as f:
+                for config_uri, _ in all_tested_configs:
+                    f.write(f"{config_uri}\n")
+            self.root.after(0, self.update_treeview)
+            self.log(f"Testing complete! Found {len(self.best_configs)} working configs")
+        except Exception as e:
+            self.log(f"Error in testing pasted configs: {str(e)}")
+        finally:
+            self.root.after(0, lambda: self.fetch_btn.config(state=tk.NORMAL))
+            self.root.after(0, lambda: self.reload_btn.config(state=tk.NORMAL))
+            self.root.after(0, lambda: self.progress.config(value=0))
+
+    def copy_selected_configs(self, event=None):
+        selected_items = self.tree.selection()
+        if not selected_items: return
+        configs = []
+        for item in selected_items:
+            index = int(self.tree.item(item)['values'][0]) - 1
+            if 0 <= index < len(self.best_configs):
+                configs.append(self.best_configs[index][0])
+        if configs:
+            self.root.clipboard_clear()
+            self.root.clipboard_append('\n'.join(configs))
+            self.log(f"Copied {len(configs)} config(s) to clipboard")
+
+    def update_counters(self):
+        self.tested_label.config(text=f"Tested: {self.tested_configs}")
+        self.total_label.config(text=f"Total: {self.total_configs}")
+        self.working_label.config(text=f"Working: {self.working_configs}")
+
+    # --- END OF RESTORED METHODS ---
         
     def _fetch_and_test_worker(self):
         """Worker thread for fetching and testing configs"""
