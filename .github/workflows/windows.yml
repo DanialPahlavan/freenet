@@ -34,21 +34,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller requests tqdm qrcode Pillow psutil
 
-      # 4. Build executable with PyInstaller
+      # 4. Create default sub.txt file
+      # Creates a sub.txt file with default mirrors. This will be used if one doesn't exist in the repo.
+      - name: Create default sub.txt file
+        run: |
+          echo '"barry-far": "https://raw.githubusercontent.com/barry-far/V2ray-Config/refs/heads/main/All_Configs_Sub.txt"' > sub.txt
+          echo '"SoliSpirit": "https://raw.githubusercontent.com/SoliSpirit/v2ray-configs/refs/heads/main/all_configs.txt"' >> sub.txt
+        shell: cmd
+
+      # 5. Build executable with PyInstaller
       # Runs the PyInstaller command to create the executable
       - name: Build executable with PyInstaller
         run: pyinstaller --onefile --noconsole --icon=icon.ico --name Freenet freenet.pyw
 
-      # 5. Prepare artifact for upload
-      # Creates a 'release' directory and copies the final executable and xray.exe into it
+      # 6. Prepare artifact for upload
+      # Creates a 'release' directory and copies the final executable, xray.exe, and sub.txt into it
       - name: Prepare artifact for upload
         run: |
           mkdir release
           copy dist\Freenet.exe release\
           copy xray.exe release\
+          copy sub.txt release\
         shell: cmd
 
-      # 6. Upload artifact
+      # 7. Upload artifact
       # Uploads the 'release' directory so you can download the final package
       - name: Upload artifact
         uses: actions/upload-artifact@v4
