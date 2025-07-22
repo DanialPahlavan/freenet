@@ -11,13 +11,16 @@ import requests
 import socket
 import random
 import concurrent.futures
-from tqdm import tqdm
 import threading
 import queue
 import sys
 from datetime import datetime
-import winreg
+import platform
+if platform.system() == "Windows":
+    import winreg
 import qrcode
+import zipfile
+import shutil
 from PIL import ImageTk, Image
 if sys.platform == 'win32':
     from subprocess import CREATE_NO_WINDOW
@@ -28,21 +31,17 @@ def kill_xray_processes():
         """Kill any existing Xray processes"""
         try:
             if sys.platform == 'win32':
-                # Windows implementation
                 import psutil
                 for proc in psutil.process_iter(['name']):
                     try:
-                        if proc.info['name'] == 'xray.exe':
+                        if proc.info['name'].lower() == 'xray.exe':
                             proc.kill()
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         pass
             else:
-                # Linux/macOS implementation
-                import signal
                 import subprocess
                 subprocess.run(['pkill', '-f', 'xray'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception as e:
-            #self.log(f"Error killing existing Xray processes: {str(e)}")
+        except Exception:
             pass
 
 
@@ -50,17 +49,12 @@ class VPNConfigGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("VPN Config Manager")
-        self.root.geometry("600x700+620+20") # Increased height for new panel
+        self.root.geometry("600x600+620+20")
         
-        # Configure dark theme
         self.setup_dark_theme()
         
-        # --- Initialize Logging Queues ---
-        # This must be done before any method that might call self.log()
         self.log_queue = queue.Queue()
-        self.xray_log_queue = queue.Queue()
         
-        # Kill any existing Xray processes
         self.kill_existing_xray_processes()
 
         self.stop_event = threading.Event()
@@ -68,18 +62,15 @@ class VPNConfigGUI:
         self.active_threads = []
         self.is_fetching = False
         
-        # --- UI and Logging Setup ---
-        # Create all UI elements first, then set up the logging systems that use them.
+        self.XRAY_CORE_URL = self._get_xray_core_url()
+        self.XRAY_PATH = os.path.join(os.getcwd(), "xray.exe" if sys.platform == 'win32' else "xray")
+        
         self.setup_ui()
         self.setup_logging()
-        self.setup_xray_logging()
 
-        # --- Configuration ---
-        # Now it's safe to call methods that might log messages.
-        self.XRAY_LOG_FILE = "xraylog.txt" # اضافه شده: نام فایل لاگ
+        self.XRAY_LOG_FILE = "xraylog.txt"
         self.load_mirrors()
         
-        # Set a default mirror URL.
         if self.MIRRORS:
             default_mirror_key = next(iter(self.MIRRORS))
             self.CONFIGS_URL = self.MIRRORS[default_mirror_key]
@@ -92,29 +83,49 @@ class VPNConfigGUI:
         
         self.TEMP_FOLDER = os.path.join(os.getcwd(), "temp")
         self.TEMP_CONFIG_FILE = os.path.join(self.TEMP_FOLDER, "temp_config.json")
-        self.XRAY_PATH = os.path.join(os.getcwd(), "xray.exe")
         self.TEST_TIMEOUT = 10
         self.SOCKS_PORT = 1080
-        self.PING_TEST_URL = "https://old-queen-f906.mynameissajjad.workers.dev/login"
+        self.PING_TEST_URL = "https://facebook.com"
         self.LATENCY_WORKERS = 100
         
         if not os.path.exists(self.TEMP_FOLDER):
             os.makedirs(self.TEMP_FOLDER)
         
-        # --- Variable Initialization ---
         self.best_configs = []
         self.selected_config = None
         self.connected_config = None
         self.xray_process = None
         self.is_connected = False
-        self.is_connecting = False # اضافه شده: برای مدیریت وضعیت "در حال اتصال"
+        self.is_connecting = False
         self.total_configs = 0
         self.tested_configs = 0
         self.working_configs = 0
         
-        # Load best configs if file exists
         if os.path.exists(self.BEST_CONFIGS_FILE):
             self.load_best_configs()
+
+    def _get_xray_core_url(self):
+        system = platform.system().lower()
+        machine = platform.machine().lower()
+        base_url = "https://github.com/XTLS/Xray-core/releases/latest/download/"
+        
+        filename = ""
+        if system == "windows":
+            if machine in ["amd64", "x86_64"]: filename = "Xray-windows-64.zip"
+            elif machine in ["i386", "i686", "x86"]: filename = "Xray-windows-32.zip"
+            elif machine in ["arm64", "aarch64"]: filename = "Xray-windows-arm64-v8a.zip"
+        elif system == "linux":
+            if machine in ["amd64", "x86_64"]: filename = "Xray-linux-64.zip"
+            elif machine in ["arm64", "aarch64"]: filename = "Xray-linux-arm64-v8a.zip"
+        elif system == "darwin": # macOS
+            if machine in ["arm64", "aarch64"]: filename = "Xray-macos-arm64-v8a.zip"
+            elif machine in ["amd64", "x86_64"]: filename = "Xray-macos-64.zip"
+
+        if not filename:
+            self.log(f"Unsupported OS/Arch: {system}/{machine}. Please install Xray manually.")
+            return ""
+            
+        return base_url + filename
             
     def load_mirrors(self):
         """Loads subscription mirrors from sub.txt."""
@@ -137,7 +148,6 @@ class VPNConfigGUI:
                 for line in f:
                     cleaned_line = line.strip()
                     if cleaned_line and not cleaned_line.startswith('#'):
-                        # Remove trailing comma if it exists
                         if cleaned_line.endswith(','):
                             cleaned_line = cleaned_line[:-1]
                         lines.append(cleaned_line)
@@ -211,6 +221,24 @@ class VPNConfigGUI:
                   foreground=[('disabled', '#888888')])
         
     def setup_ui(self):
+        # --- Menu Bar ---
+        menubar = tk.Menu(self.root)
+        
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="Exit", command=self.root.quit)
+        menubar.add_cascade(label="File", menu=file_menu)
+        
+        options_menu = tk.Menu(menubar, tearoff=0)
+        options_menu.add_command(label="Update Xray Core", command=self.update_xray_core)
+        options_menu.add_command(label="Update GeoFiles", command=self.update_geofiles)
+        menubar.add_cascade(label="Options", menu=options_menu)
+        
+        tools_menu = tk.Menu(menubar, tearoff=0)
+        tools_menu.add_command(label="Clear Terminal", command=self.clear_terminal)
+        menubar.add_cascade(label="Tools", menu=tools_menu)
+        
+        self.root.config(menu=menubar)
+
         # --- Top Fixed Frame ---
         top_frame = ttk.Frame(self.root)
         top_frame.pack(fill=tk.X, pady=(10, 5), padx=10)
@@ -268,13 +296,10 @@ class VPNConfigGUI:
         self.root.bind('<Q>', self.generate_qrcode)
         main_pane.add(self.middle_frame)
 
-        # --- Bottom Frame Container (Bottom Pane) ---
-        bottom_frame_container = ttk.Frame(main_pane)
-        main_pane.add(bottom_frame_container)
+        # --- Bottom Logs Frame (Bottom Pane) ---
+        log_frame = ttk.LabelFrame(main_pane, text="Logs")
+        main_pane.add(log_frame)
 
-        # --- General Logs Frame (inside bottom container) ---
-        log_frame = ttk.LabelFrame(bottom_frame_container, text="Logs")
-        log_frame.pack(fill=tk.BOTH, expand=True, padx=0, pady=(0, 5))
         counter_frame = ttk.Frame(log_frame)
         counter_frame.pack(fill=tk.X, padx=5, pady=(5, 0))
         self.tested_label = ttk.Label(counter_frame, text="Tested: 0")
@@ -285,19 +310,12 @@ class VPNConfigGUI:
         self.working_label.pack(side=tk.LEFT, padx=(10, 0))
         self.progress = ttk.Progressbar(counter_frame, mode='determinate')
         self.progress.pack(side=tk.RIGHT, padx=(10, 10), fill=tk.X, expand=True)
-        self.terminal = scrolledtext.ScrolledText(log_frame, height=4, state=tk.DISABLED)
+        self.terminal = scrolledtext.ScrolledText(log_frame, height=8, state=tk.DISABLED)
         self.terminal.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.terminal.configure(bg='#3e3e3e', fg='#ffffff', insertbackground='white')
-
-        # --- Xray Status Frame (inside bottom container) ---
-        xray_frame = ttk.LabelFrame(bottom_frame_container, text="Xray Status")
-        xray_frame.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
-        self.xray_terminal = scrolledtext.ScrolledText(xray_frame, height=4, state=tk.DISABLED)
-        self.xray_terminal.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        self.xray_terminal.configure(bg='#1e1e1e', fg='#cccccc', insertbackground='white')
         
         main_pane.paneconfigure(self.middle_frame, minsize=200)
-        main_pane.paneconfigure(bottom_frame_container, minsize=150)
+        main_pane.paneconfigure(log_frame, minsize=150)
         
     def setup_logging(self):
         self.log_thread = threading.Thread(target=self.process_logs, daemon=True)
@@ -321,37 +339,13 @@ class VPNConfigGUI:
         self.terminal.see(tk.END)
         self.terminal.config(state=tk.DISABLED)
 
-    def setup_xray_logging(self):
-        """Initializes the logging system for Xray-specific output."""
-        self.xray_log_thread = threading.Thread(target=self.process_xray_logs, daemon=True)
-        self.xray_log_thread.start()
-
     def log_xray(self, message):
-        """Adds an Xray-specific log message to its queue and file."""
-        self.xray_log_queue.put(message)
+        """Adds an Xray-specific log message directly to its file."""
         try:
             with open(self.XRAY_LOG_FILE, 'a', encoding='utf-8') as f:
                 f.write(message + '\n')
         except Exception as e:
             print(f"Error writing to xray log file: {e}")
-
-    def process_xray_logs(self):
-        """Processes Xray log messages from the queue and updates the UI."""
-        while True:
-            try:
-                message = self.xray_log_queue.get(timeout=0.1)
-                self.root.after(0, self.update_xray_terminal, message)
-            except queue.Empty:
-                continue
-
-    def update_xray_terminal(self, message, clear=False):
-        """Updates the Xray status terminal with a new message."""
-        self.xray_terminal.config(state=tk.NORMAL)
-        if clear:
-            self.xray_terminal.delete('1.0', tk.END)
-        self.xray_terminal.insert(tk.END, message + "\n")
-        self.xray_terminal.see(tk.END)
-        self.xray_terminal.config(state=tk.DISABLED)
 
     def _clear_xray_log_file(self):
         """Clears the xray log file and writes a header."""
@@ -360,12 +354,6 @@ class VPNConfigGUI:
                 f.write(f"--- Xray Log Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
         except Exception as e:
             self.log(f"Could not clear xray log file: {e}")
-
-    def clear_xray_terminal(self):
-        """Clears the Xray status terminal."""
-        self.xray_terminal.config(state=tk.NORMAL)
-        self.xray_terminal.delete('1.0', tk.END)
-        self.xray_terminal.config(state=tk.DISABLED)
 
     def _stream_process_output(self, process, logger_func):
         """
@@ -444,14 +432,11 @@ class VPNConfigGUI:
     def fetch_and_test_configs(self):
         kill_xray_processes()
         if not self.is_fetching:
-            self.clear_xray_terminal() 
             self._clear_xray_log_file()
             self.stop_event.clear()
             self.show_mirror_selection()
         else:
             self.stop_fetching()
-            
-    # --- START OF RESTORED METHODS ---
 
     def show_mirror_selection(self):
         """Show a popup window to select mirror and thread count"""
@@ -560,7 +545,6 @@ class VPNConfigGUI:
         self.best_configs = []
         for item in self.tree.get_children():
             self.tree.delete(item)
-        self.clear_xray_terminal()
         self._clear_xray_log_file()
         self.load_best_configs()
 
@@ -652,7 +636,6 @@ class VPNConfigGUI:
     def _test_pasted_configs(self, configs):
         self.fetch_btn.config(state=tk.DISABLED)
         self.log("Testing pasted configs...")
-        self.clear_xray_terminal()
         self._clear_xray_log_file()
         thread = threading.Thread(target=self._test_pasted_configs_worker, args=(configs,), daemon=True)
         thread.start()
@@ -713,8 +696,6 @@ class VPNConfigGUI:
         self.tested_label.config(text=f"Tested: {self.tested_configs}")
         self.total_label.config(text=f"Total: {self.total_configs}")
         self.working_label.config(text=f"Working: {self.working_configs}")
-
-    # --- END OF RESTORED METHODS ---
         
     def _fetch_and_test_worker(self):
         """Worker thread for fetching and testing configs"""
@@ -842,7 +823,6 @@ class VPNConfigGUI:
         if self.is_connecting or self.is_fetching: return
 
         kill_xray_processes()
-        self.clear_xray_terminal()
         self._clear_xray_log_file()
         
         if not self.selected_config:
@@ -900,7 +880,7 @@ class VPNConfigGUI:
                 monitor_thread.start()
             else:
                 self.is_connected = False
-                self.log("Failed to start Xray. Check Xray Status panel for details.")
+                self.log("Failed to start Xray. Check xraylog.txt for details.")
                 self.xray_process = None
                 self.unset_proxy()
                 
@@ -970,30 +950,49 @@ class VPNConfigGUI:
             
         self.update_treeview()
         self.log("Disconnected")
-        self.update_connection_status() # Update UI after disconnecting
+        self.update_connection_status()
         
     def click_disconnect_config_button(self) :
         self.disconnect_config(from_button=True)
     
     def set_proxy(self, proxy_server, port):
+        system = platform.system()
         try:
-            key = winreg.HKEY_CURRENT_USER
-            subkey = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
-            access = winreg.KEY_WRITE
-            with winreg.OpenKey(key, subkey, 0, access) as internet_settings_key:
-                winreg.SetValueEx(internet_settings_key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
-                winreg.SetValueEx(internet_settings_key, "ProxyServer", 0, winreg.REG_SZ, f"{proxy_server}:{port}")
+            if system == 'Windows':
+                key = winreg.HKEY_CURRENT_USER
+                subkey = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+                access = winreg.KEY_WRITE
+                with winreg.OpenKey(key, subkey, 0, access) as internet_settings_key:
+                    winreg.SetValueEx(internet_settings_key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
+                    winreg.SetValueEx(internet_settings_key, "ProxyServer", 0, winreg.REG_SZ, f"{proxy_server}:{port}")
+            elif system == 'Darwin': # macOS
+                networks = subprocess.check_output(["networksetup", "-listallnetworkservices"]).decode('utf-8')
+                for service in networks.split('\n')[1:]:
+                    if service.strip():
+                        subprocess.run(["networksetup", "-setsocksfirewallproxy", service.strip(), proxy_server, str(port)])
+            elif system == 'Linux': # GNOME
+                subprocess.run(["gsettings", "set", "org.gnome.system.proxy", "mode", "manual"])
+                subprocess.run(["gsettings", "set", "org.gnome.system.proxy.socks", "host", proxy_server])
+                subprocess.run(["gsettings", "set", "org.gnome.system.proxy.socks", "port", str(port)])
         except Exception as e:
             self.log(f"Failed to set system proxy: {e}")
 
     def unset_proxy(self):
+        system = platform.system()
         try:
-            key = winreg.HKEY_CURRENT_USER
-            subkey = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
-            access = winreg.KEY_WRITE
-            with winreg.OpenKey(key, subkey, 0, access) as internet_settings_key:
-                winreg.SetValueEx(internet_settings_key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
-                winreg.DeleteValue(internet_settings_key, "ProxyServer")
+            if system == 'Windows':
+                key = winreg.HKEY_CURRENT_USER
+                subkey = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+                access = winreg.KEY_WRITE
+                with winreg.OpenKey(key, subkey, 0, access) as internet_settings_key:
+                    winreg.SetValueEx(internet_settings_key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+            elif system == 'Darwin': # macOS
+                networks = subprocess.check_output(["networksetup", "-listallnetworkservices"]).decode('utf-8')
+                for service in networks.split('\n')[1:]:
+                    if service.strip():
+                        subprocess.run(["networksetup", "-setsocksfirewallproxystate", service.strip(), "off"])
+            elif system == 'Linux': # GNOME
+                subprocess.run(["gsettings", "set", "org.gnome.system.proxy", "mode", "none"])
         except Exception as e:
             self.log(f"Failed to unset system proxy: {e}")
     
@@ -1004,12 +1003,11 @@ class VPNConfigGUI:
                 import psutil
                 for proc in psutil.process_iter(['name']):
                     try:
-                        if proc.info['name'] == 'xray.exe':
+                        if proc.info['name'].lower() == 'xray.exe':
                             proc.kill()
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         pass
             else:
-                import signal
                 import subprocess
                 subprocess.run(['pkill', '-f', 'xray'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
@@ -1040,8 +1038,6 @@ class VPNConfigGUI:
     def parse_vless(self, uri):
         parsed = urllib.parse.urlparse(uri)
         query_params = parse_qs(parsed.query)
-        
-        # Unquote the username (UUID) which might contain encoded characters
         uuid = urllib.parse.unquote(parsed.username)
 
         config = {
@@ -1062,40 +1058,32 @@ class VPNConfigGUI:
             }]
         }
         
-        # Add reality settings if they exist
         if config["outbounds"][0]["streamSettings"]["security"] == "reality":
             config["outbounds"][0]["streamSettings"]["realitySettings"] = {
                 "serverName": query_params.get("sni", [""])[0],
                 "publicKey": query_params.get("pbk", [""])[0],
                 "shortId": query_params.get("sid", [""])[0]
             }
-
         return config
 
     def parse_shadowsocks(self, uri):
         if not uri.startswith("ss://"):
             raise ValueError("Invalid Shadowsocks URI")
         
-        # Separate the main part from the remark
-        parts = uri[5:].split("#", 1)
-        main_part = parts[0]
-
-        # Separate user info from server info
+        main_part = uri[5:].split("#", 1)[0]
+        
         if "@" in main_part:
             user_info_part, server_part = main_part.split("@", 1)
         else:
-            # Handle cases where user info is the only thing encoded
             user_info_part = main_part
             server_part = ""
 
-        # Decode user info (method:password)
         try:
             decoded_userinfo = base64.urlsafe_b64decode(user_info_part + '=' * (-len(user_info_part) % 4)).decode('utf-8')
             method, password = decoded_userinfo.split(":", 1)
         except Exception:
              raise ValueError("Invalid user info in Shadowsocks URI")
 
-        # Parse server, port, and ignore extra params
         server_and_port = server_part.split("?", 1)[0]
         if ":" in server_and_port:
             server, port_str = server_and_port.rsplit(":", 1)
@@ -1103,39 +1091,20 @@ class VPNConfigGUI:
         else:
             raise ValueError("Invalid server/port in Shadowsocks URI")
 
-        config = {
-            "inbounds": [{"port": self.SOCKS_PORT, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}],
-            "outbounds": [{"protocol": "shadowsocks", "settings": {"servers": [{"address": server, "port": port, "method": method, "password": password}]}, "tag": "proxy"}, {"protocol": "freedom", "tag": "direct"}],
-            "routing": {"domainStrategy": "IPOnDemand", "rules": [{"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"}]}
-        }
-        return config
+        return {"inbounds": [{"port": self.SOCKS_PORT, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}], "outbounds": [{"protocol": "shadowsocks", "settings": {"servers": [{"address": server, "port": port, "method": method, "password": password}]}}]}
 
     def parse_trojan(self, uri):
-        if not uri.startswith("trojan://"):
-            raise ValueError("Invalid Trojan URI")
-        
+        if not uri.startswith("trojan://"): raise ValueError("Invalid Trojan URI")
         parsed = urllib.parse.urlparse(uri)
-        password = parsed.username
-        server = parsed.hostname
-        port = parsed.port
+        password = parsed.username; server = parsed.hostname; port = parsed.port
         query = parse_qs(parsed.query)
-        
-        config = {
-            "inbounds": [{"port": self.SOCKS_PORT, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}],
-            "outbounds": [{"protocol": "trojan", "settings": {"servers": [{"address": server, "port": port, "password": password}]}, "streamSettings": {"network": query.get("type", ["tcp"])[0], "security": "tls", "tcpSettings": {"header": {"type": query.get("headerType", ["none"])[0], "request": {"headers": {"Host": [query.get("host", [""])[0]]}}}}}, "tag": "proxy"}, {"protocol": "freedom", "tag": "direct"}],
-            "routing": {"domainStrategy": "IPOnDemand", "rules": [{"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"}]}
-        }
-        return config
+        return {"inbounds": [{"port": self.SOCKS_PORT, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}], "outbounds": [{"protocol": "trojan", "settings": {"servers": [{"address": server, "port": port, "password": password}]}, "streamSettings": {"network": query.get("type", ["tcp"])[0], "security": "tls", "tcpSettings": {"header": {"type": query.get("headerType", ["none"])[0], "request": {"headers": {"Host": [query.get("host", [""])[0]]}}}}}]}
 
     def parse_protocol(self, uri):
-        if uri.startswith("vmess://"):
-            return self.vmess_to_json(uri)
-        elif uri.startswith("vless://"):
-            return self.parse_vless(uri)
-        elif uri.startswith("ss://"):
-            return self.parse_shadowsocks(uri)
-        elif uri.startswith("trojan://"):
-            return self.parse_trojan(uri)
+        if uri.startswith("vmess://"): return self.vmess_to_json(uri)
+        elif uri.startswith("vless://"): return self.parse_vless(uri)
+        elif uri.startswith("ss://"): return self.parse_shadowsocks(uri)
+        elif uri.startswith("trojan://"): return self.parse_trojan(uri)
         raise ValueError("Unsupported protocol")
 
     def is_port_available(self, port):
@@ -1213,19 +1182,214 @@ class VPNConfigGUI:
             return (config_uri, float('inf'))
 
     def fetch_configs(self):
+        strategies = [
+            ("System default", None),
+            ("Google DNS", self._try_with_google_dns),
+            ("Cloudflare DNS", self._try_with_cloudflare_dns),
+            ("Direct IP", self._try_with_direct_ip),
+        ]
+        for strategy_name, strategy_func in strategies:
+            self.log(f"Trying strategy: {strategy_name}")
+            try:
+                if strategy_func:
+                    response = strategy_func()
+                else:
+                    response = requests.get(self.CONFIGS_URL, timeout=10)
+                
+                response.raise_for_status()
+                response.encoding = 'utf-8'
+                valid_prefixes = ("vmess://", "vless://", "ss://", "trojan://")
+                configs = [line.strip() for line in response.text.splitlines() if line.strip().startswith(valid_prefixes)]
+                self.log(f"Successfully fetched configs using: {strategy_name}")
+                return configs[::-1]
+            except Exception as e:
+                self.log(f"Error with {strategy_name}: {str(e)}")
+        
+        self.log("All strategies failed")
+        return []
+
+    def _try_with_google_dns(self):
+        return self._try_with_custom_dns(['8.8.8.8', '8.8.4.4'])
+
+    def _try_with_cloudflare_dns(self):
+        return self._try_with_custom_dns(['1.1.1.1', '1.0.0.1'])
+
+    def _try_with_custom_dns(self, dns_servers):
+        hostname = self.CONFIGS_URL.split('//')[1].split('/')[0]
+        ip = self._resolve_hostname(hostname, dns_servers[0])
+        url_with_ip = self.CONFIGS_URL.replace(hostname, ip)
+        headers = {'Host': hostname}
+        return requests.get(url_with_ip, headers=headers, timeout=10)
+
+    def _resolve_hostname(self, hostname, dns_server):
+        try: # dnspython
+            import dns.resolver
+            resolver = dns.resolver.Resolver()
+            resolver.nameservers = [dns_server]
+            result = resolver.resolve(hostname, 'A')
+            return str(result[0])
+        except: # system tools
+            return self._resolve_with_system_tools(hostname, dns_server)
+
+    def _resolve_with_system_tools(self, hostname, dns_server):
         try:
-            response = requests.get(self.CONFIGS_URL)
+            if platform.system() == "Windows":
+                result = subprocess.run(['nslookup', hostname, dns_server], capture_output=True, text=True, timeout=5)
+                for line in result.stdout.split('\n'):
+                    if 'Address:' in line and dns_server not in line:
+                        return line.split(':')[1].strip()
+            else:
+                result = subprocess.run(['dig', f'@{dns_server}', hostname, '+short'], capture_output=True, text=True, timeout=5)
+                ip = result.stdout.strip().split('\n')[0]
+                if ip and not ip.startswith(';'): return ip
+        except: pass
+        return socket.gethostbyname(hostname)
+
+    def _try_with_direct_ip(self):
+        github_ips = ['140.82.112.3', '140.82.114.3', '140.82.113.3', '140.82.121.4']
+        hostname = self.CONFIGS_URL.split('//')[1].split('/')[0]
+        for ip in github_ips:
+            try:
+                url_with_ip = self.CONFIGS_URL.replace(hostname, ip)
+                headers = {'Host': hostname}
+                return requests.get(url_with_ip, headers=headers, timeout=10)
+            except: continue
+        raise Exception("All direct IP attempts failed")
+
+    def clear_terminal(self):
+        self.terminal.config(state=tk.NORMAL)
+        self.terminal.delete('1.0', tk.END)
+        self.terminal.config(state=tk.DISABLED)
+
+    def update_xray_core(self):
+        self.log("Starting Xray core update...")
+        thread = threading.Thread(target=self._update_xray_core_worker, daemon=True)
+        thread.start()
+
+    def _update_xray_core_worker(self):
+        try:
+            self.kill_existing_xray_processes()
+            self.log("Downloading latest Xray core...")
+            self.log(f"Using URL: {self.XRAY_CORE_URL}")
+            
+            response = requests.get(self.XRAY_CORE_URL, stream=True)
             response.raise_for_status()
-            response.encoding = 'utf-8'
             
-            # Filter for valid protocol prefixes
-            valid_prefixes = ("vmess://", "vless://", "ss://", "trojan://")
-            configs = [line.strip() for line in response.text.splitlines() if line.strip().startswith(valid_prefixes)]
+            zip_path = os.path.join(self.TEMP_FOLDER, "xray_update.zip")
+            with open(zip_path, 'wb') as f:
+                f.write(response.content)
             
-            return configs[::-1]
+            self.log("Extracting Xray core...")
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                executable_name = "xray.exe" if platform.system() == "Windows" else "xray"
+                for file in zip_ref.namelist():
+                    if file.lower().endswith(executable_name.lower()):
+                        zip_ref.extract(file, self.TEMP_FOLDER)
+                        extracted_path = os.path.join(self.TEMP_FOLDER, file)
+                        shutil.move(extracted_path, self.XRAY_PATH)
+                        if platform.system() != "Windows":
+                            os.chmod(self.XRAY_PATH, 0o755)
+                        break
+            
+            self.log("Xray core updated successfully!")
+            messagebox.showinfo("Success", "Xray core updated successfully!")
         except Exception as e:
-            self.log(f"Failed to fetch configs: {e}")
-            return []
+            self.log(f"Error updating Xray core: {str(e)}")
+            messagebox.showerror("Error", f"Failed to update Xray core: {str(e)}")
+        finally:
+            if 'zip_path' in locals() and os.path.exists(zip_path):
+                os.remove(zip_path)
+
+    def update_geofiles(self):
+        self.log("Starting GeoFiles update...")
+        thread = threading.Thread(target=self._update_geofiles_worker, daemon=True)
+        thread.start()
+
+    def _update_geofiles_worker(self):
+        files_to_download = {
+            "geoip.dat": "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat",
+            "geosite.dat": "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
+        }
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {executor.submit(self._download_file_segmented, url, filename, filename): filename for filename, url in files_to_download.items()}
+            
+            all_successful = True
+            for future in concurrent.futures.as_completed(futures):
+                filename = futures[future]
+                try:
+                    success, message = future.result()
+                    if success:
+                        self.log(f"✓ {message}")
+                    else:
+                        self.log(f"✗ {message}")
+                        all_successful = False
+                except Exception as e:
+                    self.log(f"✗ Error downloading {filename}: {e}")
+                    all_successful = False
+
+        if all_successful:
+            self.log("GeoFiles updated successfully!")
+            messagebox.showinfo("Success", "GeoFiles updated successfully!")
+        else:
+            self.log("GeoFiles update failed. Check logs for details.")
+            messagebox.showerror("Error", "Failed to update one or more GeoFiles.")
+
+    def _download_file_segmented(self, url, filename, file_description, num_segments=4):
+        try:
+            head_response = requests.head(url, timeout=5)
+            head_response.raise_for_status()
+            total_size = int(head_response.headers.get('content-length', 0))
+            if total_size == 0:
+                return self._download_file_normal(url, filename, file_description)
+
+            self.log(f"Downloading {file_description} ({total_size} bytes) with {num_segments} threads...")
+            segment_size = total_size // num_segments
+            segments = [(i * segment_size, (i + 1) * segment_size - 1) for i in range(num_segments)]
+            segments[-1] = (segments[-1][0], total_size - 1)
+            
+            segment_files = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=num_segments) as executor:
+                future_to_segment = {executor.submit(self._download_segment, url, start, end, f"{filename}.part{i}"): i for i, (start, end) in enumerate(segments)}
+                for future in concurrent.futures.as_completed(future_to_segment):
+                    success, part_filename = future.result()
+                    if not success: raise Exception(f"Segment download failed: {part_filename}")
+                    segment_files.append(part_filename)
+            
+            segment_files.sort()
+            with open(filename, 'wb') as outfile:
+                for part_filename in segment_files:
+                    with open(part_filename, 'rb') as infile:
+                        outfile.write(infile.read())
+                    os.remove(part_filename)
+            return True, f"{file_description} downloaded successfully"
+        except Exception as e:
+            self.log(f"Segmented download failed for {file_description}, falling back. Error: {e}")
+            return self._download_file_normal(url, filename, file_description)
+
+    def _download_segment(self, url, start, end, filename):
+        try:
+            headers = {'Range': f'bytes={start}-{end}'}
+            response = requests.get(url, headers=headers, stream=True, timeout=10)
+            response.raise_for_status()
+            with open(filename, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk: f.write(chunk)
+            return True, filename
+        except Exception as e:
+            return False, str(e)
+
+    def _download_file_normal(self, url, filename, file_description):
+        try:
+            self.log(f"Starting normal download of {file_description}...")
+            response = requests.get(url, stream=True, timeout=15)
+            response.raise_for_status()
+            with open(filename, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk: f.write(chunk)
+            return True, f"{file_description} downloaded successfully"
+        except Exception as e:
+            return False, f"Error downloading {file_description}: {str(e)}"
 
 def main():
     kill_xray_processes()
