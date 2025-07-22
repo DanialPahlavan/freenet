@@ -50,15 +50,12 @@ class VPNConfigGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("VPN Config Manager")
-        self.root.geometry("600x700+620+20") # Increased height for new panel
+        self.root.geometry("600x600+620+20") # بازگشت به اندازه استاندارد
         
         # Configure dark theme
         self.setup_dark_theme()
         
-        # --- Initialize Logging Queues ---
-        # This must be done before any method that might call self.log()
         self.log_queue = queue.Queue()
-        self.xray_log_queue = queue.Queue()
         
         # Kill any existing Xray processes
         self.kill_existing_xray_processes()
@@ -68,18 +65,12 @@ class VPNConfigGUI:
         self.active_threads = []
         self.is_fetching = False
         
-        # --- UI and Logging Setup ---
-        # Create all UI elements first, then set up the logging systems that use them.
         self.setup_ui()
         self.setup_logging()
-        self.setup_xray_logging()
 
-        # --- Configuration ---
-        # Now it's safe to call methods that might log messages.
-        self.XRAY_LOG_FILE = "xraylog.txt" # اضافه شده: نام فایل لاگ
+        self.XRAY_LOG_FILE = "xraylog.txt"
         self.load_mirrors()
         
-        # Set a default mirror URL.
         if self.MIRRORS:
             default_mirror_key = next(iter(self.MIRRORS))
             self.CONFIGS_URL = self.MIRRORS[default_mirror_key]
@@ -101,18 +92,16 @@ class VPNConfigGUI:
         if not os.path.exists(self.TEMP_FOLDER):
             os.makedirs(self.TEMP_FOLDER)
         
-        # --- Variable Initialization ---
         self.best_configs = []
         self.selected_config = None
         self.connected_config = None
         self.xray_process = None
         self.is_connected = False
-        self.is_connecting = False # اضافه شده: برای مدیریت وضعیت "در حال اتصال"
+        self.is_connecting = False
         self.total_configs = 0
         self.tested_configs = 0
         self.working_configs = 0
         
-        # Load best configs if file exists
         if os.path.exists(self.BEST_CONFIGS_FILE):
             self.load_best_configs()
             
@@ -137,7 +126,6 @@ class VPNConfigGUI:
                 for line in f:
                     cleaned_line = line.strip()
                     if cleaned_line and not cleaned_line.startswith('#'):
-                        # Remove trailing comma if it exists
                         if cleaned_line.endswith(','):
                             cleaned_line = cleaned_line[:-1]
                         lines.append(cleaned_line)
@@ -268,13 +256,10 @@ class VPNConfigGUI:
         self.root.bind('<Q>', self.generate_qrcode)
         main_pane.add(self.middle_frame)
 
-        # --- Bottom Frame Container (Bottom Pane) ---
-        bottom_frame_container = ttk.Frame(main_pane)
-        main_pane.add(bottom_frame_container)
+        # --- Bottom Logs Frame (Bottom Pane) ---
+        log_frame = ttk.LabelFrame(main_pane, text="Logs")
+        main_pane.add(log_frame)
 
-        # --- General Logs Frame (inside bottom container) ---
-        log_frame = ttk.LabelFrame(bottom_frame_container, text="Logs")
-        log_frame.pack(fill=tk.BOTH, expand=True, padx=0, pady=(0, 5))
         counter_frame = ttk.Frame(log_frame)
         counter_frame.pack(fill=tk.X, padx=5, pady=(5, 0))
         self.tested_label = ttk.Label(counter_frame, text="Tested: 0")
@@ -285,19 +270,12 @@ class VPNConfigGUI:
         self.working_label.pack(side=tk.LEFT, padx=(10, 0))
         self.progress = ttk.Progressbar(counter_frame, mode='determinate')
         self.progress.pack(side=tk.RIGHT, padx=(10, 10), fill=tk.X, expand=True)
-        self.terminal = scrolledtext.ScrolledText(log_frame, height=4, state=tk.DISABLED)
+        self.terminal = scrolledtext.ScrolledText(log_frame, height=8, state=tk.DISABLED)
         self.terminal.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.terminal.configure(bg='#3e3e3e', fg='#ffffff', insertbackground='white')
-
-        # --- Xray Status Frame (inside bottom container) ---
-        xray_frame = ttk.LabelFrame(bottom_frame_container, text="Xray Status")
-        xray_frame.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
-        self.xray_terminal = scrolledtext.ScrolledText(xray_frame, height=4, state=tk.DISABLED)
-        self.xray_terminal.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        self.xray_terminal.configure(bg='#1e1e1e', fg='#cccccc', insertbackground='white')
         
         main_pane.paneconfigure(self.middle_frame, minsize=200)
-        main_pane.paneconfigure(bottom_frame_container, minsize=150)
+        main_pane.paneconfigure(log_frame, minsize=150)
         
     def setup_logging(self):
         self.log_thread = threading.Thread(target=self.process_logs, daemon=True)
@@ -321,37 +299,15 @@ class VPNConfigGUI:
         self.terminal.see(tk.END)
         self.terminal.config(state=tk.DISABLED)
 
-    def setup_xray_logging(self):
-        """Initializes the logging system for Xray-specific output."""
-        self.xray_log_thread = threading.Thread(target=self.process_xray_logs, daemon=True)
-        self.xray_log_thread.start()
-
     def log_xray(self, message):
-        """Adds an Xray-specific log message to its queue and file."""
-        self.xray_log_queue.put(message)
+        """Adds an Xray-specific log message directly to its file."""
         try:
             with open(self.XRAY_LOG_FILE, 'a', encoding='utf-8') as f:
                 f.write(message + '\n')
         except Exception as e:
+            # Cannot use self.log here as it might be called from a thread
+            # and could cause race conditions with the UI.
             print(f"Error writing to xray log file: {e}")
-
-    def process_xray_logs(self):
-        """Processes Xray log messages from the queue and updates the UI."""
-        while True:
-            try:
-                message = self.xray_log_queue.get(timeout=0.1)
-                self.root.after(0, self.update_xray_terminal, message)
-            except queue.Empty:
-                continue
-
-    def update_xray_terminal(self, message, clear=False):
-        """Updates the Xray status terminal with a new message."""
-        self.xray_terminal.config(state=tk.NORMAL)
-        if clear:
-            self.xray_terminal.delete('1.0', tk.END)
-        self.xray_terminal.insert(tk.END, message + "\n")
-        self.xray_terminal.see(tk.END)
-        self.xray_terminal.config(state=tk.DISABLED)
 
     def _clear_xray_log_file(self):
         """Clears the xray log file and writes a header."""
@@ -360,12 +316,6 @@ class VPNConfigGUI:
                 f.write(f"--- Xray Log Started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
         except Exception as e:
             self.log(f"Could not clear xray log file: {e}")
-
-    def clear_xray_terminal(self):
-        """Clears the Xray status terminal."""
-        self.xray_terminal.config(state=tk.NORMAL)
-        self.xray_terminal.delete('1.0', tk.END)
-        self.xray_terminal.config(state=tk.DISABLED)
 
     def _stream_process_output(self, process, logger_func):
         """
@@ -444,7 +394,6 @@ class VPNConfigGUI:
     def fetch_and_test_configs(self):
         kill_xray_processes()
         if not self.is_fetching:
-            self.clear_xray_terminal() 
             self._clear_xray_log_file()
             self.stop_event.clear()
             self.show_mirror_selection()
@@ -560,7 +509,6 @@ class VPNConfigGUI:
         self.best_configs = []
         for item in self.tree.get_children():
             self.tree.delete(item)
-        self.clear_xray_terminal()
         self._clear_xray_log_file()
         self.load_best_configs()
 
@@ -652,7 +600,6 @@ class VPNConfigGUI:
     def _test_pasted_configs(self, configs):
         self.fetch_btn.config(state=tk.DISABLED)
         self.log("Testing pasted configs...")
-        self.clear_xray_terminal()
         self._clear_xray_log_file()
         thread = threading.Thread(target=self._test_pasted_configs_worker, args=(configs,), daemon=True)
         thread.start()
@@ -842,7 +789,6 @@ class VPNConfigGUI:
         if self.is_connecting or self.is_fetching: return
 
         kill_xray_processes()
-        self.clear_xray_terminal()
         self._clear_xray_log_file()
         
         if not self.selected_config:
@@ -900,7 +846,7 @@ class VPNConfigGUI:
                 monitor_thread.start()
             else:
                 self.is_connected = False
-                self.log("Failed to start Xray. Check Xray Status panel for details.")
+                self.log("Failed to start Xray. Check xraylog.txt for details.")
                 self.xray_process = None
                 self.unset_proxy()
                 
