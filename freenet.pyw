@@ -1094,11 +1094,32 @@ class VPNConfigGUI:
         return {"inbounds": [{"port": self.SOCKS_PORT, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}], "outbounds": [{"protocol": "shadowsocks", "settings": {"servers": [{"address": server, "port": port, "method": method, "password": password}]}}]}
 
     def parse_trojan(self, uri):
-        if not uri.startswith("trojan://"): raise ValueError("Invalid Trojan URI")
+        if not uri.startswith("trojan://"):
+            raise ValueError("Invalid Trojan URI")
+        
         parsed = urllib.parse.urlparse(uri)
-        password = parsed.username; server = parsed.hostname; port = parsed.port
+        password = parsed.username
+        server = parsed.hostname
+        port = parsed.port
         query = parse_qs(parsed.query)
-        return {"inbounds": [{"port": self.SOCKS_PORT, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}], "outbounds": [{"protocol": "trojan", "settings": {"servers": [{"address": server, "port": port, "password": password}]}, "streamSettings": {"network": query.get("type", ["tcp"])[0], "security": "tls", "tcpSettings": {"header": {"type": query.get("headerType", ["none"])[0], "request": {"headers": {"Host": [query.get("host", [""])[0]]}}}}}]}
+        
+        stream_settings = {
+            "network": query.get("type", ["tcp"])[0],
+            "security": "tls",
+            "tlsSettings": {
+                "serverName": query.get("sni", [server])[0]
+            }
+        }
+        
+        config = {
+            "inbounds": [{"port": self.SOCKS_PORT, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}}],
+            "outbounds": [{
+                "protocol": "trojan",
+                "settings": {"servers": [{"address": server, "port": port, "password": password}]},
+                "streamSettings": stream_settings
+            }]
+        }
+        return config
 
     def parse_protocol(self, uri):
         if uri.startswith("vmess://"): return self.vmess_to_json(uri)
