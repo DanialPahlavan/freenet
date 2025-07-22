@@ -49,11 +49,7 @@ class VPNConfigGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("VPN Config Manager")
-<<<<<<< HEAD
         self.root.geometry("600x600+620+20")
-=======
-        self.root.geometry("600x600+620+20") # بازگشت به اندازه استاندارد
->>>>>>> 882839400a3e2228cb7652fe05173040517d44b9
         
         self.setup_dark_theme()
         
@@ -66,12 +62,9 @@ class VPNConfigGUI:
         self.active_threads = []
         self.is_fetching = False
         
-<<<<<<< HEAD
         self.XRAY_CORE_URL = self._get_xray_core_url()
         self.XRAY_PATH = os.path.join(os.getcwd(), "xray.exe" if sys.platform == 'win32' else "xray")
         
-=======
->>>>>>> 882839400a3e2228cb7652fe05173040517d44b9
         self.setup_ui()
         self.setup_logging()
 
@@ -352,8 +345,6 @@ class VPNConfigGUI:
             with open(self.XRAY_LOG_FILE, 'a', encoding='utf-8') as f:
                 f.write(message + '\n')
         except Exception as e:
-            # Cannot use self.log here as it might be called from a thread
-            # and could cause race conditions with the UI.
             print(f"Error writing to xray log file: {e}")
 
     def _clear_xray_log_file(self):
